@@ -1,0 +1,320 @@
+---
+title: "STAT 35920: Homework 6"
+author: "Robert Winter"
+format: pdf
+editor: visual
+
+geometry:
+      - top=30mm
+      - left=30mm
+toc: true
+toc-title: Table of Contents
+number-sections: true
+
+# Suppress output for assignments
+echo: true
+warning: false
+output: true
+
+# Wrap code chunk text
+include-in-header:
+  text: |
+    \usepackage{fvextra}
+    \DefineVerbatimEnvironment{Highlighting}{Verbatim}{breaklines,commandchars=\\\{\}}
+---
+
+**Based on the data `log.txt`, perform a model selection based on RJMCMC. The models under consideration are**
+
+$$
+\begin{aligned}
+m=1 &: \log(\lambda(x)) = \beta_0 + \beta_1 x \\
+m=2 &: \log(\lambda(x)) = \beta_0 + \beta_1 x + \beta_2 x^2.
+\end{aligned}
+$$
+
+**In the data file, the first column is** $x$**,** **a continuous covariate, and the second column is** $y$**, the Poisson outcome where** $y \sim \mathrm{Pois}\big(\lambda(x)\big)$**.**
+
+**Consider parameter space** $\{m=1,\beta_0,\beta_1\}$ **and** $\{m=2,\beta_0,\beta_1,\beta_2\}$**. Use RJMCMC to estimate the posterior of** $m$**,** $\beta_0$**,** $\beta_1$**, and** $\beta_2$**. Draw the trace plots for them and make a conclusion if** $m=1$ **or** $m=2$ **is a better model by comparing their marginal posterior probabilities.**
+
+```{r}
+#| echo: FALSE
+#| output: FALSE
+
+library(tidyverse)
+library(ggplot2)
+```
+
+```{r}
+#| echo: FALSE
+#| output: FALSE
+
+logdata = read.table("C:/Users/rewin/OneDrive/Documents/STAT_35920/Homework/HW6/log.txt",
+                 header = T)
+
+y = logdata$y
+logy = log(y)
+x1 = logdata$x
+x2 = logdata$x^2
+```
+
+First, we plot the data to get our bearings. There does seem to be a quadratic trend, so it's plausible that Model 2 is the correct model.
+
+```{r}
+#| echo: FALSE
+#| output: TRUE
+
+ggplot(logdata, aes(x=x,y=y)) +
+  theme_bw() +
+  geom_point()
+```
+
+Now, we run an RJMCMC simulation:
+
+```{r}
+## Initialize parameter values
+n.mc <- 10000
+m <- rep(0, n.mc)
+
+h <- matrix(rep(0.5, 4), ncol=2, nrow=2)  ## the probability of transition between model m=1 and model m=2; with probability 0.5 the model can go from 1->1, 1->2, 2->1, and 2->2. Note that it must be true that h(1,1) + h(1,2) = h(2,1) + h(2,2) = 1, since from model 1 (or 2), the algorithm only allows either staying at model 1 (or 2) or jump to model 2 (or 1), respectively. 
+
+beta01 <- matrix(0, ncol=2, nrow=n.mc)
+beta2 <- rep(0, n.mc)
+
+
+### Set up prior parameters: mu, beta1 ~ N(0, sig.beta), beta2 | m=2 ~ N(0, sig.beta), 
+sig.u <- sqrt(1)
+sig.beta <- sqrt(10) 
+
+## Assume prior P(m=1) = pi.M = 0.5.
+pi.M <- 0.5
+
+#### tau is the standard deviation of proposal density for mu, beta1, and beta2
+tau <- sqrt(0.05)
+
+
+m[1] <- 2
+beta01[1,] <- c(0,0)
+##beta2[1] <- 0.5
+```
+
+```{r}
+### Function samp012 is to sample the full model with mu, beta1, beta2. Here, b01 = c(mu, beta1), and b2 = beta2 ###
+samp012 <- function(b01, b2){
+
+    curr <- c(b01, b2)
+    epi <- rnorm(3, 0, sd=tau) %>% abs()
+    prop <- curr + epi 
+    
+    like.ratio <- - sum(log(dpois(y, lambda = exp(curr[1]+curr[2]*x1 + curr[3]*x2)))) + sum(log(dpois(y, lambda = exp(prop[1]+ prop[2]*x1 + prop[3]*x2))))
+
+    #cat("curr", curr, "prop", prop, "\n")
+    #cat("like-ratio", like.ratio, "\n"); readline()
+    
+    prior.ratio <- - sum(log(dnorm(curr, 0, sig.beta))) + sum(log(dnorm(prop, 0, sig.beta))) 
+
+    acc <- exp(like.ratio + prior.ratio)
+    #cat("samp012 acc", acc, "\n"); #readline()
+
+    ind <- (acc > runif(1))
+
+#    res <- c(res, beta012.tmp * ind + c(beta01,beta2) * (1-ind))
+    res <- prop * ind + curr * (1-ind)
+    #cat("ind", ind, "res", res[i+1, ], "i", i, "\n"); #readline()
+    #cat(res); #readline()
+    return(res)
+}
+```
+
+```{r}
+### Function samp01 is to sample the reduced model with mu and beta1 Here, b01 = c(mu, beta1) ###
+samp01 <- function(b01){
+
+    curr <- b01
+    epi <- rnorm(2, 0, sd=tau) %>% abs()
+    prop <- curr + epi 
+
+    
+    like.ratio <- - sum(log(dpois(y, lambda=exp(curr[1]+curr[2]*x1)))) + sum(log(dpois(y, lambda=exp(prop[1]+ prop[2]*x1))))
+
+    prior.ratio <- - sum(log(dnorm(curr, 0, sig.beta))) + sum(log(dnorm(prop, 0, sig.beta)))
+
+    acc <- exp(like.ratio + prior.ratio)
+
+    #cat("samp01 acc", acc, "\n"); #readline()
+    
+    ind <- (acc > runif(1))
+    
+    res <- prop * ind + curr * (1-ind)
+    ##cat(res)
+    
+    return(res)
+}
+```
+
+```{r}
+set.seed(41)
+
+#### Set up the RJMCMC
+
+for(sim in 1:(n.mc-1)){
+
+    if(m[sim]==1){
+
+        chg.ind <- (runif(1) < h[1,2])  ## Set chg.ind to TRUE with probability h[1,2] (prob from model 1 to 2). If chg.ind is TRUE, propose a move, which will add beta2 to the model. The move needs to be accepted.
+        
+        if(chg.ind){
+
+            u <- rnorm(1, 0, sd=sig.u)
+            beta2.tmp <- u
+            #cat("u", u, "\n"); readline()
+            
+            like.ratio = sum(y*beta2.tmp*x2
+                             - exp(beta01[sim, 1]+beta01[sim, 2]*x1+beta2.tmp*x2)
+                             + exp(beta01[sim, 1]+beta01[sim, 2]*x1))
+            # Sanity check
+            like.ratio.alt = sum(dpois(y, lambda = exp(beta01[sim, 1]+beta01[sim, 2]*x1+
+                                                       beta2.tmp*x2), log=T) 
+                                 - dpois(y, lambda = exp(beta01[sim, 1]+beta01[sim, 2]*x1),
+                                         log=T))
+            
+            
+            # like.ratio <- - sum(-2 * beta2.tmp * x2 * (y - beta01[sim,1]- beta01[sim,2] * x1) + beta2.tmp^2 * x2^2) / 2 / sig^2
+            prior.ratio <- - log(sqrt(2*pi) * sig.beta) - beta2.tmp^2 / 2 / sig.beta^2 ## + log((1-pi.M)) - log(pi.M)
+            proposal <- log(sqrt(2*pi) * sig.u) + u^2 / 2 / sig.u^2
+
+            acc <- exp(like.ratio + prior.ratio + proposal)
+
+            ## RW TESTING INEQUALITY FLIP
+            ind <- (acc <= runif(1))  ## If ind is TRUE, accept the move from model 1 --> 2. If ind is FALSE, do not move.
+
+            if(ind){
+                m[sim+1] <- 2
+                beta2[sim+1] <- beta2.tmp
+                beta01[sim+1, ] <- beta01[sim, ]
+                #beta01[sim+1, ] <- c(1,1)
+            }
+            if(!ind){
+                m[sim+1] <- m[sim]
+                beta2[sim+1] <-  0
+                beta01[sim+1, ] <- beta01[sim, ]
+                #beta01[sim+1, ] <- c(1,1)
+            }
+        }
+
+        if(!chg.ind){  ## if chg.ind is FALSE, do not propose model 2; resample mu and beta1.
+
+            rest <- samp01(beta01[sim,])
+            beta01[sim+1, ] <- rest
+            beta2[sim+1] <- 0 #beta2[sim]
+            m[sim+1] <- m[sim]
+               # beta01[sim+1, ] <- c(1,1)
+        }
+    }
+
+#    cat(sim, c(beta01[sim+1, ], beta2[sim+1]), "\n")
+  
+  ### The reversible move from model 2 to model 1.
+    
+    if(m[sim]==2){
+
+        chg.ind <- (runif(1) < h[2,1]) ## Set chg.ind to TRUE with probability h[2,1] (prob from model 2 to 1). If chg.ind is TRUE, propose a move, which will eliminate beta2 from the model. The move needs to be accepted.
+        
+        if(chg.ind){
+
+            u <- beta2[sim]
+            beta2.tmp <- beta2[sim]
+        
+            like.ratio = sum(-y*beta2.tmp*x2
+                             + exp(beta01[sim, 1]+beta01[sim, 2]*x1+beta2.tmp*x2)
+                             - exp(beta01[sim, 1]+beta01[sim, 2]*x1))
+            # like.ratio <- - sum(-2 * beta2.tmp * x2 * (y - beta01[sim,1]- beta01[sim,2] * x1) + beta2.tmp^2 * x2^2) / 2 / sig^2
+            
+            prior.ratio <- - log(sqrt(2*pi) * sig.beta) - beta2.tmp^2 / 2 / sig.beta^2
+            proposal <- log(sqrt(2*pi) * sig.u) + u^2 / 2 / sig.u^2
+
+            acc <- exp(-like.ratio - prior.ratio - proposal)
+
+            ## RW TESTING INEQUALITY FLIP
+            ind <- (acc <= runif(1))
+            
+            if(ind){
+                m[sim+1] <- 1
+                beta2[sim+1] <- 0
+                beta01[sim+1, ] <- beta01[sim, ]
+                #beta01[sim+1, ] <- c(1,1)
+            }
+            
+            if(!ind){
+                m[sim+1] <- m[sim]
+                beta01[sim+1, ] <-beta01[sim, ]
+                beta2[sim+1] <- beta2[sim]
+                #beta01[sim+1, ] <- c(1,1)
+            }
+        }
+        
+        if(!chg.ind){
+           rest <- samp012(beta01[sim,], beta2[sim])
+           beta01[sim+1, ] <- rest[1:2]
+           beta2[sim+1] <- rest[3]
+           m[sim+1] <- m[sim]
+                #beta01[sim+1, ] <- c(1,1)
+        }
+    }
+#   cat(sim, c(beta01[sim+1, ], beta2[sim+1]), "\n")
+    
+    ##readline()   
+               
+}
+```
+
+Our posterior distribution of $m$ is a point mass on $m=2$. There is strong posterior evidence that the correct model is $m=2$.
+
+```{r}
+ggplot(as.data.frame(m), aes(x=as.factor(m))) +
+  geom_bar()
+
+plot(m)
+```
+
+```{r}
+ggplot(as.data.frame(beta01), aes(x=V1, y=after_stat(density))) +
+  geom_histogram()
+
+plot(beta01[,1])
+```
+
+```{r}
+ggplot(as.data.frame(beta01), aes(x=V2, y=after_stat(density))) +
+  geom_histogram()
+
+plot(beta01[,2])
+```
+
+```{r}
+ggplot(as.data.frame(beta2), aes(x=beta2, y=after_stat(density))) +
+  geom_histogram()
+
+plot(beta2)
+```
+
+```{r}
+best.fit.lines = as.data.frame(c(-300:300)/100) %>%
+  rename("x"="c(-300:300)/100") %>%
+  mutate(y1=exp(mean(beta01[1]) + mean(beta01[2])*x),
+         y2=exp(mean(beta01[1]) + mean(beta01[2])*x + mean(beta2)*x^2)) 
+
+ggplot(logdata, aes(x=x,y=y)) +
+  geom_point() +
+  geom_path(data = best.fit.lines, mapping=aes(x=x,y=y1), linewidth = 1, col = "blue") +
+  geom_path(data = best.fit.lines, mapping=aes(x=x,y=y2), linewidth = 1, col = "red")
+
+# ggplot(logdata, aes(x=x,y=log(y))) +
+#   geom_point() +
+#   geom_path(data = best.fit.lines, mapping=aes(x=x,y=log(y1)), linewidth = 1, col = "blue") +
+#   geom_path(data = best.fit.lines, mapping=aes(x=x,y=log(y2)), linewidth = 1, col = "red")
+```
+
+```{r}
+glm(y ~ x, family = poisson, data = logdata) %>% summary()
+glm(y ~ x + I(x^2), family = poisson, data = logdata) %>% summary()
+```

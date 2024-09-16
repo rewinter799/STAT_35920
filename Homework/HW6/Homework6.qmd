@@ -1,0 +1,429 @@
+---
+title: "STAT 35920: Homework 6"
+author: "Robert Winter"
+format: pdf
+editor: visual
+
+# highlight-style: pygments
+geometry:
+      - top=30mm
+      - left=30mm
+# toc: true
+# toc-title: Table of Contents
+# number-sections: true
+
+# Suppress output for assignments
+echo: true
+warning: false
+output: true
+
+# Wrap code chunk text
+include-in-header:
+  text: |
+    \usepackage{fvextra}
+    \DefineVerbatimEnvironment{Highlighting}{Verbatim}{breaklines,commandchars=\\\{\}}
+---
+
+```{r}
+#| echo: FALSE
+#| output: FALSE
+
+library(tidyverse)
+library(ggplot2)
+library(gridExtra)
+```
+
+**Based on the data `log.txt`, perform a model selection based on RJMCMC. The models under consideration are**
+
+$$
+\begin{aligned}
+m=1 &: \log\big(\lambda(x)\big) = \beta_0 + \beta_1 x \\
+m=2 &: \log\big(\lambda(x)\big) = \beta_0 + \beta_1 x + \beta_2 x^2.
+\end{aligned}
+$$
+
+**In the data file, the first column is** $x$**,** **a continuous covariate, and the second column is** $y$**, the Poisson outcome where** $y \sim \mathrm{Pois}\big(\lambda(x)\big)$**.**
+
+**Consider parameter space** $\{m=1,\beta_0,\beta_1\}$ **and** $\{m=2,\beta_0,\beta_1,\beta_2\}$**. Use RJMCMC to estimate the posterior of** $m$**,** $\beta_0$**,** $\beta_1$**, and** $\beta_2$**. Draw the trace plots for them and make a conclusion if** $m=1$ **or** $m=2$ **is a better model by comparing their marginal posterior probabilities.**
+
+```{r}
+#| echo: FALSE
+#| output: FALSE
+
+logdata = read.table("C:/Users/rewin/OneDrive/Documents/STAT_35920/Homework/HW6/log.txt",
+                 header = T)
+
+y = logdata$y
+x1 = logdata$x
+x2 = logdata$x^2
+```
+
+We begin by plotting the data in the $x$-$y$ plane to get our bearings:
+
+```{r}
+#| echo: FALSE
+
+ggplot(data = NULL, aes(x=x1,y=y)) +
+  theme_bw() +
+  geom_point() +
+  xlab("x")
+```
+
+Now, we use RJMCMC simulation to estimate the posterior distributions of $m, \beta_0, \beta_1, \text{and } \beta_2$. I have adapted Prof. Yuan Ji's sample code to account for the fact that we are running a Poisson regression rather than a linear regression.
+
+```{r}
+## Initialize parameter values
+n.mc <- 100000
+m <- rep(1, n.mc)
+
+h <- matrix(rep(0.5, 4), ncol=2, nrow=2)  ## the probability of transition between model m=1 and model m=2; with probability 0.5 the model can go from 1->1, 1->2, 2->1, and 2->2. Note that it must be true that h(1,1) + h(1,2) = h(2,1) + h(2,2) = 1, since from model 1 (or 2), the algorithm only allows either staying at model 1 (or 2) or jump to model 2 (or 1), respectively. 
+
+beta01 <- matrix(0, ncol=2, nrow=n.mc)
+beta2 <- rep(0, n.mc)
+
+### Set up prior parameters: mu, beta1 ~ N(0, sig.beta), beta2 | m=2 ~ N(0, sig.beta), 
+sig.u <- sqrt(1)
+sig.beta <- sqrt(10) 
+
+## Assume prior P(m=1) = pi.M = 0.5.
+pi.M <- 0.5
+
+#### tau is the standard deviation of proposal density for mu, beta1, and beta2
+tau <- sqrt(0.05)
+
+
+m[1] <- 1
+beta01[1,] <- c(1,1)
+##beta2[1] <- 0.5
+```
+
+```{r}
+### Function samp01 is to sample the reduced model with mu and beta1 Here, b01 = c(mu, beta1) ###
+samp01 <- function(b01){
+
+    curr <- b01
+    epi <- rnorm(2, 0, sd=tau)
+    prop <- curr + epi 
+
+    like.ratio <- - sum(log(dpois(y, lambda=exp(curr[1]+curr[2]*x1)))) + sum(log(dpois(y, lambda=exp(prop[1]+prop[2]*x1))))
+
+    prior.ratio <- - sum(log(dnorm(curr, 0, sig.beta))) + sum(log(dnorm(prop, 0, sig.beta)))
+
+    acc <- exp(like.ratio + prior.ratio)
+
+    #cat("samp01 acc", acc, "\n"); #readline()
+    
+    ind <- (acc > runif(1))
+    
+    res <- prop * ind + curr * (1-ind)
+    ##cat(res)
+    
+    return(res)
+}
+```
+
+```{r}
+### Function samp012 is to sample the full model with mu, beta1, beta2. Here, b01 = c(mu, beta1), and b2 = beta2 ###
+samp012 <- function(b01, b2){
+
+    curr <- c(b01, b2)
+    epi <- rnorm(3, 0, sd=tau)
+    prop <- curr + epi 
+    
+    like.ratio <- - sum(log(dpois(y, lambda=exp(curr[1]+curr[2]*x1+curr[3]*x2)))) + sum(log(dpois(y, lambda=exp(prop[1]+prop[2]*x1+prop[3]*x2))))
+
+    #cat("curr", curr, "prop", prop, "\n")
+    #cat("like-ratio", like.ratio, "\n"); readline()
+    
+    prior.ratio <- - sum(log(dnorm(curr, 0, sig.beta))) + sum(log(dnorm(prop, 0, sig.beta))) 
+
+    acc <- exp(like.ratio + prior.ratio)
+    #cat("samp012 acc", acc, "\n"); #readline()
+
+    ind <- (acc > runif(1))
+
+#    res <- c(res, beta012.tmp * ind + c(beta01,beta2) * (1-ind))
+    res <- prop * ind + curr * (1-ind)
+    #cat("ind", ind, "res", res[i+1, ], "i", i, "\n"); #readline()
+    #cat(res); #readline()
+    return(res)
+}
+```
+
+```{r}
+set.seed(41)
+
+#### Set up the RJMCMC
+
+for(sim in 1:(n.mc-1)){
+
+    if(m[sim]==1){
+
+        chg.ind <- (runif(1) < h[1,2])  ## Set chg.ind to TRUE with probability h[1,2] (prob from model 1 to 2). If chg.ind is TRUE, propose a move, which will add beta2 to the model. The move needs to be accepted.
+        
+        if(chg.ind){
+
+            u <- rnorm(1, 0, sd=sig.u)
+            beta2.tmp <- u
+            #cat("u", u, "\n"); readline()
+            
+            like.ratio = sum(y*beta2.tmp*x2
+                             + exp(beta01[sim,1]+beta01[sim,2]*x1) 
+                             - exp(beta01[sim,1]+beta01[sim,2]*x1+beta2.tmp*x2))
+            # Sanity check
+            # LR_sancheck = sum(dpois(y, lambda=exp(beta01[sim,1]+beta01[sim,2]*x1+beta2.tmp*x2), log=T)) - sum(dpois(y, lambda=exp(beta01[sim,1]+beta01[sim,2]*x1), log=T))
+            
+            prior.ratio <- - log(sqrt(2*pi) * sig.beta) - beta2.tmp^2 / 2 / sig.beta^2 ## + log((1-pi.M)) - log(pi.M)
+            proposal <- log(sqrt(2*pi) * sig.u) + u^2 / 2 / sig.u^2
+
+            acc <- exp(like.ratio + prior.ratio + proposal)
+
+            ind <- (acc > runif(1))  ## If ind is TRUE, accept the move from model 1 --> 2. If ind is FALSE, do not move.
+
+            if(ind){
+                m[sim+1] <- 2
+                beta2[sim+1] <- beta2.tmp
+                beta01[sim+1, ] <- beta01[sim, ]
+                #beta01[sim+1, ] <- c(1,1)
+            }
+            if(!ind){
+                m[sim+1] <- m[sim]
+                beta2[sim+1] <-  0
+                beta01[sim+1, ] <- beta01[sim, ]
+                #beta01[sim+1, ] <- c(1,1)
+            }
+        }
+
+        if(!chg.ind){  ## if chg.ind is FALSE, do not propose model 2; resample mu and beta1.
+
+            rest <- samp01(beta01[sim,])
+            beta01[sim+1, ] <- rest
+            beta2[sim+1] <- 0 #beta2[sim]
+            m[sim+1] <- m[sim]
+               # beta01[sim+1, ] <- c(1,1)
+        }
+    }
+
+#    cat(sim, c(beta01[sim+1, ], beta2[sim+1]), "\n")
+  
+  ### The reversible move from model 2 to model 1.
+    
+    if(m[sim]==2){
+
+        chg.ind <- (runif(1) < h[2,1]) ## Set chg.ind to TRUE with probability h[2,1] (prob from model 2 to 1). If chg.ind is TRUE, propose a move, which will eliminate beta2 from the model. The move needs to be accepted.
+        
+        if(chg.ind){
+
+            u <- beta2[sim]
+            beta2.tmp <- beta2[sim]
+        
+            like.ratio = sum(y*beta2.tmp*x2
+                             + exp(beta01[sim,1]+beta01[sim,2]*x1) 
+                             - exp(beta01[sim,1]+beta01[sim,2]*x1+beta2.tmp*x2))
+            # Sanity check
+            # LR_sancheck = sum(dpois(y, lambda=exp(beta01[sim,1]+beta01[sim,2]*x1+beta2.tmp*x2), log=T)) - sum(dpois(y, lambda=exp(beta01[sim,1]+beta01[sim,2]*x1), log=T))
+            
+            prior.ratio <- - log(sqrt(2*pi) * sig.beta) - beta2.tmp^2 / 2 / sig.beta^2
+            proposal <- log(sqrt(2*pi) * sig.u) + u^2 / 2 / sig.u^2
+
+            acc <- exp(-like.ratio - prior.ratio - proposal)
+
+            ind <- (acc > runif(1))
+            
+            if(ind){
+                m[sim+1] <- 1
+                beta2[sim+1] <- 0
+                beta01[sim+1, ] <- beta01[sim, ]
+                #beta01[sim+1, ] <- c(1,1)
+            }
+            
+            if(!ind){
+                m[sim+1] <- m[sim]
+                beta01[sim+1, ] <-beta01[sim, ]
+                beta2[sim+1] <- beta2[sim]
+                #beta01[sim+1, ] <- c(1,1)
+            }
+        }
+        
+        if(!chg.ind){
+           rest <- samp012(beta01[sim,], beta2[sim])
+           beta01[sim+1, ] <- rest[1:2]
+           beta2[sim+1] <- rest[3]
+           m[sim+1] <- m[sim]
+                #beta01[sim+1, ] <- c(1,1)
+        }
+    }
+#   cat(sim, c(beta01[sim+1, ], beta2[sim+1]), "\n")
+    
+    ##readline()   
+               
+}
+```
+
+```{r}
+#| echo: FALSE
+#| output: FALSE
+
+beta_data = cbind(beta01, beta2, m) %>%
+  as.data.frame() %>%
+  mutate(iter = row_number()) %>%
+  rename(beta0 = V1,
+         beta1 = V2)
+```
+
+With our simulation complete, we now check its performance. All four parameters—$\beta_0, \beta_1, \beta_2, \text{and } m$—have trace plots with nice thick bands, indicating that our RJMCMC sampler is mixing well: draws of each parameter never stay at the same level for too long, nor do they ever take too many consecutive steps in the same direction.
+
+```{r}
+#| echo: FALSE
+
+trace_beta0 = ggplot(beta_data, aes(x=iter, y=beta0)) +
+  theme_bw() +
+  geom_line() +
+  ggtitle(paste0("Trace Plot of \u03B2","0")) +
+  ylab(paste0("\u03B2","0")) +
+  xlab("Index")
+
+trace_beta1 = ggplot(beta_data, aes(x=iter, y=beta1)) +
+  theme_bw() +
+  geom_line() +
+  ggtitle(paste0("Trace Plot of \u03B2","1")) +
+  ylab(paste0("\u03B2","1")) +
+  xlab("Index")
+
+trace_beta2 = ggplot(beta_data, aes(x=iter, y=beta2)) +
+  theme_bw() +
+  geom_line() +
+  ggtitle(paste0("Trace Plot of \u03B2","2")) +
+  ylab(paste0("\u03B2","2")) +
+  xlab("Index")
+
+trace_m = ggplot(beta_data, aes(x=iter, y=m)) +
+  theme_bw() +
+  geom_line() +
+  ggtitle(paste0("Trace Plot of m")) +
+  ylab(paste0("m")) +
+  xlab("Index")
+
+# arrangeGrob(trace_beta0, trace_beta1, nrow = 1)
+grid.arrange(trace_beta0, trace_beta1, trace_beta2, trace_m,
+             nrow = 2, ncol = 2)
+```
+
+Since our simulation worked well, we move forward interpreting its results.
+
+The posterior density of $\beta_0$ is plotted below. The posterior mean of $\beta_0$ is approximately $-0.395$.
+
+```{r}
+#| echo: FALSE
+
+# beta0
+
+# Density
+ggplot(beta_data, aes(x=beta0, y=after_stat(density))) +
+  theme_bw() +
+  geom_histogram(col = "black", fill = "white", bins = 20) +
+  ggtitle(paste0("Posterior Density of \u03B2","0")) +
+  xlab(paste0("\u03B2","0"))
+# hist(beta01[,1])
+
+# Posterior mean
+# mean(beta_data$beta0) #-0.395
+```
+
+The posterior density of $\beta_1$ is plotted below. The posterior mean of $\beta_1$ is approximately $1.964$.
+
+```{r}
+#| echo: FALSE
+
+# beta1
+
+# Posterior density
+ggplot(beta_data, aes(x=beta1, y=after_stat(density))) +
+  theme_bw() +
+  geom_histogram(col = "black", fill = "white", bins = 20) +
+  ggtitle(paste0("Posterior Density of \u03B2","1")) +
+  xlab(paste0("\u03B2","1"))
+# hist(beta01[,2])
+
+# Posterior mean
+# mean(beta_data$beta1) #1.964
+```
+
+The posterior density of $\beta_2$ is plotted below. The posterior mean of $\beta_2$ is approximately $0.001$.
+
+```{r}
+#| echo: FALSE
+
+# beta2
+
+# Posterior density
+ggplot(beta_data, aes(x=beta2, y=after_stat(density))) +
+  theme_bw() +
+  geom_histogram(col = "black", fill = "white", bins = 20) +
+  ggtitle(paste0("Posterior Density of \u03B2","2")) +
+  xlab(paste0("\u03B2","2"))
+# hist(beta2)
+
+# Posterior mean
+# mean(beta_data$beta2) #0.001
+```
+
+The posterior mass of $m$ is plotted below. The posterior mode of $m$ is clearly $1$.
+
+```{r}
+#| echo: FALSE
+
+# m
+
+# Posterior density
+ggplot(beta_data, aes(x=as.factor(m))) +
+  theme_bw() +
+  geom_bar(aes(y=after_stat(count)/sum(after_stat(count))), col = "black", fill = "white") +
+  ggtitle("Posterior Mass of m") +
+  ylab("mass") +
+  xlab("m")
+# hist(m)
+
+#
+Mode <- function(x) {
+  ux <- unique(x)
+  ux[which.max(tabulate(match(x, ux)))]
+}
+# Mode(beta_data$m)
+```
+
+Model $m=1$ clearly has a higher posterior mass than Model $m=2$ (in fact, the posterior mass of $m=1$ is nearly $1$!), so we conclude that $m=1: \log\big(\lambda(x)\big) = \beta_0 + \beta_1 x$ is the better model for these data. Thus, using the posterior means of $\beta_0$ and $\beta_1$, our estimate of the data-generating process is
+
+$$
+\log\big(\hat{\lambda}(x)\big) = -0.395 + 1.964x.
+$$
+
+As shown in the plot below, this estimate fits the data nicely.
+
+```{r}
+#| echo: FALSE
+
+post_fit = function(x){
+  return(exp(mean(beta_data$beta0) + mean(beta_data$beta1)*x))
+}
+
+test = as.data.frame(c(-3000:3000)/1000) %>%
+  rename("x" = "c(-3000:3000)/1000") %>%
+  mutate(fit = post_fit(x))
+
+
+ggplot(data = test) +
+  theme_bw() +
+  geom_point(data = as.data.frame(cbind(x1, y)), aes(x=x1, y=y)) +
+  geom_line(data = test, aes(x=x, y=fit), linewidth = 1, col = "red") +
+  xlab("x")
+```
+
+```{r}
+#| echo: FALSE
+#| output: FALSE
+
+# Frequentist approach for sanity
+glm(y ~ x1 + x2, family = poisson) %>% summary()
+glm(y ~ x1, family = poisson) %>% summary()
+```
