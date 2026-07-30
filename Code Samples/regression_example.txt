@@ -1,0 +1,18 @@
+# basic linear regression example
+
+model {
+	# likelihood
+	for(i in 1:n) {
+		y[i] ~ dnorm(inprod(x[i,], beta), sigma.sq.inv)
+	}
+	
+	# prior for regression coefficients
+	for(i in 1:(p+1)) {
+		beta[i] ~ dt(0, pow(2.5, -2), 1)
+		  # cauchy dist'n (t w/ df = 1) w/ location 0 and scale 2.5
+	}
+	
+	# prior for error variance
+	sigma ~ dt(0, pow(0.5, -2), 1) T(0,)
+	sigma.sq.inv <- pow(sigma, -2)
+}

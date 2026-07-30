@@ -1,0 +1,16 @@
+# R
+.Rproj.user/
+.Rhistory
+.RData
+.Ruserdata
+
+# Course materials (non-code)
+*.pdf
+*.docx
+*.doc
+*.pptx
+*.ppt
+
+# Build/junk artifacts
+_ul
+_old/
